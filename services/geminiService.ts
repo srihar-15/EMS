@@ -1,9 +1,26 @@
+
 import { GoogleGenAI } from "@google/genai";
 import { Employee, LeaveRequest } from '../types';
 
 const getClient = () => {
-  // Assuming environment variable availability as per instructions
-  const apiKey = process.env.API_KEY || '';
+  // Safely check for API Key in various environment configurations
+  // 1. process.env (Node/Webpack)
+  // 2. import.meta.env (Vite)
+  // 3. Fallback to empty string to prevent ReferenceError
+  let apiKey = '';
+  try {
+     // @ts-ignore
+     if (typeof process !== 'undefined' && process.env) {
+         apiKey = process.env.API_KEY || '';
+     }
+  } catch (e) {
+     // process is likely undefined in browser
+  }
+  
+  if (!apiKey && (import.meta as any).env) {
+      apiKey = (import.meta as any).env.VITE_API_KEY || '';
+  }
+
   if (!apiKey) {
     console.warn("API_KEY is missing. Gemini features will likely fail.");
   }
@@ -42,6 +59,6 @@ export const analyzeWorkforceData = async (employees: Employee[], leaves: LeaveR
     return response.text;
   } catch (error) {
     console.error("Gemini Analysis Failed:", error);
-    return "<ul><li>Unable to generate AI insights at this moment. Please check API configuration.</li></ul>";
+    return "<ul><li>Unable to generate AI insights at this moment. Please check API configuration or network connection.</li></ul>";
   }
 };

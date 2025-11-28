@@ -1,5 +1,4 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from './store/useStore';
 import Login from './pages/Login';
 import Sidebar from './components/Sidebar';
@@ -11,8 +10,8 @@ import Performance from './pages/Performance';
 import Attendance from './pages/Attendance';
 import AccessDenied from './components/AccessDenied';
 import { Role } from './types';
+import { Loader } from 'lucide-react';
 
-// SECURITY: Define allowed roles for each route
 const PAGE_PERMISSIONS: Record<string, Role[]> = {
   'admin-dashboard': [Role.ADMIN],
   'admin-employees': [Role.ADMIN],
@@ -26,27 +25,39 @@ const PAGE_PERMISSIONS: Record<string, Role[]> = {
 };
 
 const App: React.FC = () => {
-  const { user } = useStore();
+  const { user, fetchInitialData, isLoading } = useStore();
   const [activePage, setActivePage] = useState<string>('');
 
-  // Default redirect logic based on role
+  // Fetch data on mount
+  useEffect(() => {
+    fetchInitialData();
+  }, []);
+
   const getDefaultPage = () => {
     if (user?.role === Role.ADMIN) return 'admin-dashboard';
     if (user?.role === Role.HR) return 'hr-dashboard';
     return 'emp-dashboard';
   };
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (user) {
       setActivePage(getDefaultPage());
     }
   }, [user]);
 
+  if (isLoading) {
+      return (
+          <div className="h-screen flex flex-col items-center justify-center bg-slate-900 text-white gap-4">
+              <Loader className="animate-spin text-indigo-500" size={48} />
+              <p className="animate-pulse text-sm text-slate-400">Connecting to Nexus Database...</p>
+          </div>
+      );
+  }
+
   if (!user) {
     return <Login />;
   }
 
-  // ROUTE GUARD: Check if current user has permission for activePage
   const allowedRoles = PAGE_PERMISSIONS[activePage] || [];
   const hasPermission = allowedRoles.includes(user.role);
 

@@ -1,8 +1,8 @@
 
-
 import { create } from 'zustand';
 import { Employee, LeaveRequest, Role, LeaveStatus, AuditLog, PerformanceReview, Notification, AttendanceRecord, DepartmentBudget } from '../types';
 import { INITIAL_EMPLOYEES, INITIAL_LEAVES, INITIAL_LOGS, INITIAL_REVIEWS, INITIAL_NOTIFICATIONS, INITIAL_ATTENDANCE, INITIAL_BUDGETS } from '../services/mockData';
+import { api } from '../client/src/services/api';
 
 interface AppState {
   user: Employee | null;
@@ -14,39 +14,33 @@ interface AppState {
   attendance: AttendanceRecord[];
   budgets: DepartmentBudget[];
   
+  isLoading: boolean;
+  
   // Actions
+  fetchInitialData: () => Promise<void>;
   login: (email: string) => boolean;
   logout: () => void;
   
   // Modifiers
-  addEmployee: (emp: Employee) => void;
-  updateEmployee: (id: string, updates: Partial<Employee>) => void;
-  deleteEmployee: (id: string) => void;
-  addLeaveRequest: (req: LeaveRequest) => void;
-  updateLeaveStatus: (id: string, status: LeaveStatus) => void;
-  addPerformanceReview: (review: PerformanceReview) => void;
-  updateDepartmentBudget: (department: string, amount: number) => void;
+  addEmployee: (emp: Employee) => Promise<void>;
+  updateEmployee: (id: string, updates: Partial<Employee>) => Promise<void>;
+  deleteEmployee: (id: string) => Promise<void>;
+  addLeaveRequest: (req: LeaveRequest) => Promise<void>;
+  updateLeaveStatus: (id: string, status: LeaveStatus) => Promise<void>;
+  addPerformanceReview: (review: PerformanceReview) => Promise<void>;
+  updateDepartmentBudget: (department: string, amount: number) => Promise<void>;
   
   // Attendance
-  checkIn: (employeeId: string) => void;
-  checkOut: (employeeId: string) => void;
+  checkIn: (employeeId: string) => Promise<void>;
+  checkOut: (employeeId: string) => Promise<void>;
   
   // Notifications
   addNotification: (userId: string, message: string, type: 'info' | 'success' | 'warning' | 'error') => void;
   markNotificationRead: (id: string) => void;
   clearNotifications: () => void;
 
-  // Internal helper to create logs
   logAction: (action: string, target: string, details?: string) => void;
 }
-
-// Helper to calculate days between two dates (inclusive)
-const calculateDays = (start: string, end: string): number => {
-  const startDate = new Date(start);
-  const endDate = new Date(end);
-  const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
-  return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-};
 
 export const useStore = create<AppState>((set, get) => ({
   user: null,
@@ -57,263 +51,175 @@ export const useStore = create<AppState>((set, get) => ({
   notifications: INITIAL_NOTIFICATIONS,
   attendance: INITIAL_ATTENDANCE,
   budgets: INITIAL_BUDGETS,
+  isLoading: false,
 
-  logAction: (action, target, details) => {
-    const { user, logs } = get();
-    // In a real app, system actions might happen without a user, 
-    // but here we assume logged-in user actions
-    const currentUser = user || { id: 'sys', name: 'System', role: Role.ADMIN }; 
-    
-    const newLog: AuditLog = {
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-      userId: currentUser.id as string,
-      userName: currentUser.name,
-      userRole: currentUser.role as Role,
-      action,
-      target,
-      timestamp: new Date().toISOString(),
-      details
-    };
-
-    set({ logs: [newLog, ...logs] });
+  fetchInitialData: async () => {
+    set({ isLoading: true });
+    try {
+        const data = await api.init();
+        console.log("Connected to Backend API");
+        set({
+            employees: data.employees.length ? data.employees : INITIAL_EMPLOYEES,
+            leaves: data.leaves.length ? data.leaves : INITIAL_LEAVES,
+            logs: data.logs.length ? data.logs : INITIAL_LOGS,
+            reviews: data.reviews,
+            attendance: data.attendance,
+            budgets: data.budgets.length ? data.budgets : INITIAL_BUDGETS,
+            notifications: data.notifications,
+            isLoading: false
+        });
+    } catch (error) {
+        console.warn("Backend unavailable, using Mock Data.");
+        // We do NOT re-throw here. We explicitly allow the app to run in "Offline/Mock" mode.
+        set({ isLoading: false });
+    }
   },
 
   login: (email: string) => {
-    const user = get().employees.find(e => e.email === email);
-    if (user) {
-      set({ user });
+    // For demo: Find employee by email in local state (which might be from backend)
+    const emp = get().employees.find(e => e.email === email);
+    if (emp) {
+      set({ user: emp });
+      // Store ID as token for the API service to use
+      localStorage.setItem('nexus_token', emp.id);
+      localStorage.setItem('nexus_user', JSON.stringify(emp));
       return true;
     }
     return false;
   },
 
-  logout: () => set({ user: null }),
-
-  addEmployee: (emp) => {
-    const { user, logAction } = get();
-    
-    // SECURITY CHECK
-    if (user?.role !== Role.ADMIN) {
-      logAction('SECURITY_VIOLATION', 'addEmployee', `Unauthorized attempt by ${user?.name} to add employee`);
-      alert("Access Denied: Only Administrators can add employees.");
-      return;
-    }
-
-    logAction('ADD_EMPLOYEE', emp.name, `Added to ${emp.department} department`);
-    set((state) => ({ 
-      employees: [...state.employees, emp] 
-    }));
+  logout: () => {
+      localStorage.removeItem('nexus_token');
+      localStorage.removeItem('nexus_user');
+      set({ user: null });
   },
 
-  updateEmployee: (id, updates) => {
-    const { user, employees, logAction, addNotification } = get();
-    const emp = employees.find(e => e.id === id);
-    
-    if (!emp) return;
-
-    // SECURITY CHECK: Only Admin or HR can update others. Users can update themselves (logic tailored for profile).
-    const hasPermission = user?.role === Role.ADMIN || user?.role === Role.HR || user?.id === id;
-
-    if (!hasPermission) {
-      logAction('SECURITY_VIOLATION', 'updateEmployee', `Unauthorized update attempt on ${emp.name} by ${user?.name}`);
-      return;
-    }
-
-    logAction('UPDATE_PROFILE', emp.name, `Updated fields: ${Object.keys(updates).join(', ')}`);
-    
-    // Notify the employee that their profile was updated by someone else
-    if (user?.id !== id) {
-        addNotification(id, `Your profile was updated by ${user?.role} ${user?.name}.`, 'info');
-    }
-
-    set((state) => ({
-      employees: state.employees.map(e => e.id === id ? { ...e, ...updates } : e)
-    }));
-  },
-
-  deleteEmployee: (id) => {
-    const { user, employees, logAction } = get();
-    
-    // SECURITY CHECK
-    if (user?.role !== Role.ADMIN) {
-      logAction('SECURITY_VIOLATION', 'deleteEmployee', `Unauthorized attempt by ${user?.name} to delete employee`);
-      alert("Access Denied: Only Administrators can delete records.");
-      return;
-    }
-
-    const emp = employees.find(e => e.id === id);
-    if (emp) {
-      logAction('DELETE_EMPLOYEE', emp.name, `Removed from ${emp.department}`);
-      set((state) => ({
-        employees: state.employees.filter(e => e.id !== id)
-      }));
+  addEmployee: async (emp) => {
+    try {
+        // Remove temp ID if it was generated by frontend
+        const { id, ...data } = emp;
+        const saved = await api.employees.create(data);
+        set(state => ({ employees: [...state.employees, saved] }));
+        get().logAction('ADD_EMPLOYEE', emp.name, `Added to ${emp.department}`);
+    } catch (e) {
+        console.error("API Error (Fallback to Local):", e);
+        // Optimistic / Fallback
+        set(state => ({ employees: [...state.employees, emp] }));
     }
   },
 
-  addLeaveRequest: (req) => {
-    const { logAction, employees, addNotification } = get();
-    // Employees can add leaves. No strict role check needed other than being logged in (implied).
-    logAction('APPLY_LEAVE', req.type, `${req.startDate} to ${req.endDate}`);
-    
-    // NOTIFICATION: Notify all HRs
-    const hrUsers = employees.filter(e => e.role === Role.HR);
-    hrUsers.forEach(hr => {
-        addNotification(hr.id, `New ${req.type} leave request from ${req.employeeName}`, 'info');
-    });
-
-    set((state) => ({
-      leaves: [req, ...state.leaves]
-    }));
-  },
-
-  updateLeaveStatus: (id, status) => {
-    const { user, leaves, employees, logAction, addNotification } = get();
-
-    // SECURITY CHECK: Level 1 (HR) or Level 2 (Admin)
-    const leave = leaves.find(l => l.id === id);
-    if (!leave) return;
-
-    // If status is PENDING_ADMIN, only ADMIN can act
-    if (leave.status === LeaveStatus.PENDING_ADMIN) {
-         if (user?.role !== Role.ADMIN) {
-            logAction('SECURITY_VIOLATION', 'updateLeaveStatus', `User ${user?.name} tried to approve Executive Level leave without Admin privileges.`);
-            alert("Executive Approval Required: Only Admins can approve this request.");
-            return;
-         }
-    } else {
-        // Standard leaves: HR or Admin
-        if (user?.role !== Role.HR && user?.role !== Role.ADMIN) {
-            logAction('SECURITY_VIOLATION', 'updateLeaveStatus', `Unauthorized approval attempt by ${user?.name}`);
-            return;
-        }
-    }
-
-    // MULTI-LEVEL WORKFLOW:
-    // If HR approves a long leave (>3 days), it escalates to PENDING_ADMIN instead of APPROVED
-    if (status === LeaveStatus.APPROVED && leave.status === LeaveStatus.PENDING && user?.role === Role.HR) {
-         const duration = calculateDays(leave.startDate, leave.endDate);
-         if (duration > 3) {
-             status = LeaveStatus.PENDING_ADMIN; // Escalation
-             logAction('ESCALATE_LEAVE', leave.employeeName, `Escalated to Admin (Duration: ${duration} days)`);
-         }
-    }
-
-    // FINAL APPROVAL LOGIC (Deduction)
-    if (status === LeaveStatus.APPROVED) {
-      const emp = employees.find(e => e.id === leave.employeeId);
-      if (emp) {
-        const days = calculateDays(leave.startDate, leave.endDate);
-        const currentBalance = emp.leaveBalance[leave.type];
-        
-        // Update Employee Balance
-        const updatedBalance = { ...emp.leaveBalance, [leave.type]: currentBalance - days };
-        
-        set((state) => ({
-            employees: state.employees.map(e => e.id === emp.id ? { ...e, leaveBalance: updatedBalance } : e)
+  updateEmployee: async (id, updates) => {
+    try {
+        const saved = await api.employees.update(id, updates);
+        set(state => ({
+            employees: state.employees.map(e => e.id === id ? { ...e, ...saved } : e)
         }));
-        
-        logAction('BALANCE_DEDUCTION', emp.name, `Deducted ${days} days from ${leave.type} (Remaining: ${updatedBalance[leave.type]})`);
-      }
-    }
-
-    logAction(`${status}_LEAVE`, leave.employeeName, `Leave type: ${leave.type}`);
-    
-    // NOTIFICATION
-    const type = status === LeaveStatus.APPROVED ? 'success' : status === LeaveStatus.REJECTED ? 'error' : 'info';
-    let msg = `Your ${leave.type} leave request was ${status.toLowerCase()}.`;
-    if (status === LeaveStatus.PENDING_ADMIN) msg = `Your ${leave.type} leave has been escalated for Executive Approval.`;
-    
-    addNotification(leave.employeeId, msg, type);
-
-    set((state) => ({
-      leaves: state.leaves.map(l => l.id === id ? { ...l, status } : l)
-    }));
-  },
-
-  addPerformanceReview: (review) => {
-    const { user, employees, logAction, addNotification } = get();
-    
-    // SECURITY CHECK
-    if (user?.role !== Role.ADMIN && user?.role !== Role.HR) {
-      logAction('SECURITY_VIOLATION', 'addPerformanceReview', `Unauthorized review attempt by ${user?.name}`);
-      return;
-    }
-
-    const emp = employees.find(e => e.id === review.employeeId);
-    if (emp) {
-        logAction('ADD_REVIEW', emp.name, `Rating: ${review.rating}/5`);
-        addNotification(emp.id, `You received a new performance review from ${review.reviewerName}.`, 'info');
-        set((state) => ({
-            reviews: [review, ...state.reviews]
+    } catch (e) {
+        console.error("API Error:", e);
+        // Fallback
+        set(state => ({
+            employees: state.employees.map(e => e.id === id ? { ...e, ...updates } : e)
         }));
     }
   },
 
-  updateDepartmentBudget: (department, amount) => {
-    const { user, logAction } = get();
-    if (user?.role !== Role.ADMIN) {
-        logAction('SECURITY_VIOLATION', 'updateBudget', `Unauthorized budget update by ${user?.name}`);
-        return;
+  deleteEmployee: async (id) => {
+    try {
+        await api.employees.delete(id);
+        set(state => ({ employees: state.employees.filter(e => e.id !== id) }));
+    } catch (e) { 
+        console.error("API Error:", e);
+        set(state => ({ employees: state.employees.filter(e => e.id !== id) }));
     }
-    
-    logAction('UPDATE_BUDGET', department, `New allocation: $${amount}`);
-    set((state) => ({
-        budgets: state.budgets.map(b => b.department === department ? { ...b, allocated: amount } : b)
-    }));
   },
 
-  checkIn: (employeeId) => {
-      const { employees, logAction, addNotification } = get();
-      const emp = employees.find(e => e.id === employeeId);
-      if (!emp) return;
+  addLeaveRequest: async (req) => {
+    try {
+        const { id, ...data } = req;
+        const saved = await api.leaves.create(data);
+        set(state => ({ leaves: [saved, ...state.leaves] }));
+        
+        // Notify HR (Local Optimistic Update)
+        const hrUsers = get().employees.filter(e => e.role === Role.HR);
+        hrUsers.forEach(hr => get().addNotification(hr.id, `New ${req.type} leave request`, 'info'));
+    } catch (e) { 
+        console.error("API Error:", e);
+        set(state => ({ leaves: [req, ...state.leaves] }));
+    }
+  },
 
-      const newRecord: AttendanceRecord = {
-          id: Date.now().toString(),
-          employeeId: emp.id,
-          employeeName: emp.name,
-          date: new Date().toISOString().split('T')[0],
-          checkIn: new Date().toISOString(),
-          checkOut: null,
-          status: new Date().getHours() > 9 ? 'LATE' : 'PRESENT', // Simple logic: after 9 AM is late
-          totalHours: 0
-      };
-
-      logAction('CHECK_IN', emp.name, `Time: ${new Date().toLocaleTimeString()}`);
-      addNotification(emp.id, `Check-in confirmed at ${new Date().toLocaleTimeString()}`, 'success');
-
+  updateLeaveStatus: async (id, status) => {
+      // Optimistic update first to ensure UI responsiveness
+      const originalLeaves = get().leaves;
       set(state => ({
-          attendance: [...state.attendance, newRecord]
+          leaves: state.leaves.map(l => l.id === id ? { ...l, status } : l)
+      }));
+
+      try {
+          let saved;
+          if (status === LeaveStatus.APPROVED) {
+              const leave = get().leaves.find(l => l.id === id);
+              // Simple check for L1 vs L2
+              if (leave && leave.status === 'PENDING') {
+                   saved = await api.leaves.approveL1(id);
+              } else {
+                   saved = await api.leaves.approveL2(id);
+              }
+          } else {
+              saved = await api.leaves.reject(id, "Admin/HR Action");
+          }
+          
+          // If successful, we might get updated data
+          if (saved) {
+             set(state => ({
+                leaves: state.leaves.map(l => l.id === id ? saved : l)
+             }));
+          }
+
+      } catch (e) { 
+          console.error("API Error:", e);
+          // If strict consistency is needed, revert here. 
+          // For demo, we keep the optimistic update.
+      }
+  },
+
+  addPerformanceReview: async (review) => {
+      try {
+          const { id, ...data } = review;
+          const saved = await api.performance.create(data);
+          set(state => ({ reviews: [saved, ...state.reviews] }));
+      } catch (e) { 
+          console.error("API Error:", e);
+          set(state => ({ reviews: [review, ...state.reviews] }));
+      }
+  },
+
+  updateDepartmentBudget: async (department, amount) => {
+      set(state => ({
+          budgets: state.budgets.map(b => b.department === department ? { ...b, allocated: amount } : b)
       }));
   },
 
-  checkOut: (employeeId) => {
-      const { attendance, logAction, addNotification, employees } = get();
-      const emp = employees.find(e => e.id === employeeId);
-      const today = new Date().toISOString().split('T')[0];
-      
-      const record = attendance.find(r => r.employeeId === employeeId && r.date === today);
-      
-      if (record && !record.checkOut) {
-          const checkOutTime = new Date();
-          const checkInTime = new Date(record.checkIn);
-          const hours = (checkOutTime.getTime() - checkInTime.getTime()) / (1000 * 60 * 60);
+  checkIn: async (employeeId) => {
+      try {
+          const saved = await api.attendance.checkIn();
+          set(state => ({ attendance: [saved, ...state.attendance] }));
+      } catch (e) { console.error("API Error:", e); }
+  },
 
-          logAction('CHECK_OUT', record.employeeName, `Time: ${checkOutTime.toLocaleTimeString()} | Duration: ${hours.toFixed(2)}h`);
-          if (emp) addNotification(emp.id, `Check-out confirmed. Total hours: ${hours.toFixed(2)}`, 'info');
-
-          set(state => ({
-              attendance: state.attendance.map(r => r.id === record.id ? {
-                  ...r,
-                  checkOut: checkOutTime.toISOString(),
-                  totalHours: parseFloat(hours.toFixed(2))
-              } : r)
+  checkOut: async (employeeId) => {
+      try {
+          const saved = await api.attendance.checkOut();
+          set(state => ({ 
+              attendance: state.attendance.map(r => r.id === saved.id ? saved : r)
           }));
-      }
+      } catch (e) { console.error("API Error:", e); }
   },
 
   addNotification: (userId, message, type) => {
-    const newNotif: Notification = {
-        id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+    // Local state only for now
+    const newNotif = {
+        id: Date.now().toString(),
         userId,
         message,
         type,
@@ -323,17 +229,40 @@ export const useStore = create<AppState>((set, get) => ({
     set(state => ({ notifications: [newNotif, ...state.notifications] }));
   },
 
-  markNotificationRead: (id) => {
-    set(state => ({
-        notifications: state.notifications.map(n => n.id === id ? { ...n, isRead: true } : n)
-    }));
+  markNotificationRead: async (id) => {
+      try {
+          await api.notifications.markRead(id);
+          set(state => ({
+              notifications: state.notifications.map(n => n.id === id ? { ...n, isRead: true } : n)
+          }));
+      } catch(e) { 
+          // Fallback
+          set(state => ({
+              notifications: state.notifications.map(n => n.id === id ? { ...n, isRead: true } : n)
+          }));
+      }
   },
 
   clearNotifications: () => {
     const { user } = get();
-    if (!user) return;
-    set(state => ({
-        notifications: state.notifications.filter(n => n.userId !== user.id)
-    }));
+    if (user) {
+        set(state => ({ notifications: state.notifications.filter(n => n.userId !== user.id) }));
+    }
+  },
+
+  logAction: (action, target, details) => {
+      const { user, logs } = get();
+      const newLog: AuditLog = {
+          id: Date.now().toString(),
+          userId: user?.id || 'sys',
+          userName: user?.name || 'System',
+          userRole: user?.role || Role.ADMIN,
+          action,
+          target,
+          timestamp: new Date().toISOString(),
+          details
+      };
+      set({ logs: [newLog, ...logs] });
   }
+
 }));

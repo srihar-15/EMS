@@ -1,13 +1,12 @@
 
-
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell 
 } from 'recharts';
 import { Users, DollarSign, TrendingUp, Sparkles, Search, Trash2, Plus, AlertTriangle, Briefcase, CheckCircle, XCircle, Edit2 } from 'lucide-react';
-import { analyzeWorkforceData } from '../services/geminiService';
 import { Role, LeaveStatus } from '../types';
+import { api } from '../client/src/services/api';
 
 const AdminDashboard: React.FC = () => {
   const { employees, leaves, budgets, deleteEmployee, addEmployee, updateLeaveStatus, addNotification, updateDepartmentBudget, user } = useStore();
@@ -34,12 +33,11 @@ const AdminDashboard: React.FC = () => {
 
   const stats = {
     total: employees.length,
-    avgSalary: Math.round(employees.reduce((acc, e) => acc + e.salary, 0) / employees.length),
+    avgSalary: Math.round(employees.reduce((acc, e) => acc + e.salary, 0) / (employees.length || 1)),
     pending: leaves.filter(l => l.status === 'PENDING').length,
     escalated: leaves.filter(l => l.status === LeaveStatus.PENDING_ADMIN).length
   };
 
-  // Chart Data Preparation
   const deptData = employees.reduce((acc: any[], emp) => {
     const existing = acc.find(x => x.name === emp.department);
     if (existing) existing.value++;
@@ -48,47 +46,7 @@ const AdminDashboard: React.FC = () => {
   }, []);
 
   const COLORS = ['#6366f1', '#8b5cf6', '#10b981', '#f59e0b', '#ec4899'];
-
-  const handleAiAnalysis = async () => {
-    setLoadingAi(true);
-    const insight = await analyzeWorkforceData(employees, leaves);
-    setAiInsight(insight);
-    
-    // Auto-notify admin if high risk is detected in the response
-    if (insight && user) {
-        if (insight.toLowerCase().includes('risk') || insight.toLowerCase().includes('burnout')) {
-            addNotification(user.id, "AI detected potential workforce risks. Review the analysis panel immediately.", 'warning');
-        } else {
-            addNotification(user.id, "Workforce analysis completed successfully.", 'success');
-        }
-    }
-    
-    setLoadingAi(false);
-  };
-
-  const handleAddEmployee = (e: React.FormEvent) => {
-    e.preventDefault();
-    const newEmp = {
-      id: Math.random().toString(36).substr(2, 9),
-      name: newEmpName,
-      email: newEmpEmail,
-      department: newEmpDept,
-      salary: Number(newEmpSalary),
-      role: Role.EMPLOYEE,
-      joinDate: new Date().toISOString().split('T')[0],
-      avatar: `https://picsum.photos/seed/${Math.random()}/200/200`,
-      leaveBalance: { vacation: 20, sick: 10, personal: 5 } // Default balance for new hires
-    };
-    addEmployee(newEmp);
-    setShowAddModal(false);
-    // Reset form
-    setNewEmpName('');
-    setNewEmpEmail('');
-    setNewEmpDept('');
-    setNewEmpSalary('');
-  };
-
-  // Budget Calculations
+  
   const financialData = budgets.map(b => {
       const spend = employees
         .filter(e => e.department === b.department)
@@ -96,6 +54,46 @@ const AdminDashboard: React.FC = () => {
       const percent = Math.min(100, (spend / b.allocated) * 100);
       return { ...b, spend, percent };
   });
+
+  const handleAiAnalysis = async () => {
+    setLoadingAi(true);
+    try {
+        // Try Backend API first
+        const response = await api.ai.analyze();
+        const insight = response.insight;
+        setAiInsight(insight);
+        
+        if (insight && user) {
+            if (insight.toLowerCase().includes('risk') || insight.toLowerCase().includes('burnout')) {
+                addNotification(user.id, "AI detected potential workforce risks. Review the analysis panel immediately.", 'warning');
+            } else {
+                addNotification(user.id, "Workforce analysis completed successfully.", 'success');
+            }
+        }
+    } catch (error) {
+        console.error("Backend Analysis failed, using fallback message.", error);
+        setAiInsight("<ul><li><strong>Analysis Server Unreachable:</strong> Unable to contact the backend AI service.</li><li>Ensure the Node.js server is running on port 5000.</li><li>Check console for connection errors.</li></ul>");
+    } finally {
+        setLoadingAi(false);
+    }
+  };
+
+  const handleAddEmployee = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newEmp = {
+      name: newEmpName,
+      email: newEmpEmail,
+      department: newEmpDept,
+      salary: Number(newEmpSalary),
+      role: Role.EMPLOYEE,
+      joinDate: new Date().toISOString().split('T')[0],
+      avatar: `https://picsum.photos/seed/${Math.random()}/200/200`,
+      leaveBalance: { vacation: 20, sick: 10, personal: 5 }
+    };
+    addEmployee(newEmp as any);
+    setShowAddModal(false);
+    setNewEmpName(''); setNewEmpEmail(''); setNewEmpDept(''); setNewEmpSalary('');
+  };
 
   const handleBudgetUpdate = (dept: string) => {
       updateDepartmentBudget(dept, newBudgetAmount);
@@ -149,7 +147,7 @@ const AdminDashboard: React.FC = () => {
               disabled={loadingAi}
               className="px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
             >
-              {loadingAi ? 'Analyzing Data...' : 'Run Analysis'}
+              {loadingAi ? 'Analyzing Data on Server...' : 'Run Analysis'}
             </button>
           </div>
           
@@ -382,12 +380,13 @@ const AdminDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Add Employee Modal */}
+      {/* Add Employee Modal (Keep existing JSX) */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 max-w-md w-full shadow-2xl animate-fade-in">
             <h2 className="text-2xl font-bold mb-6 text-gray-800">Add New Employee</h2>
             <form onSubmit={handleAddEmployee} className="space-y-4">
+              {/* Form fields same as before */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
                 <input required type="text" className="w-full p-2 border rounded-lg" value={newEmpName} onChange={e => setNewEmpName(e.target.value)} />
